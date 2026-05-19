@@ -1,119 +1,90 @@
-import { Canvas, useFrame } from '@react-three/fiber'
-import { PointerLockControls, KeyboardControls, useKeyboardControls } from '@react-three/drei'
-import { Vector3 } from 'three'
+import React, { useState, useEffect } from 'react';
+import { Canvas } from '@react-three/fiber';
+// OrbitControlsは開発中の視点移動に便利ですが、本番では固定カメラにするためコメントアウトしています
+import { OrbitControls } from '@react-three/drei';
 
-// 1. WASDキーの入力設定
-const keyboardMap = [
-  { name: 'forward', keys: ['ArrowUp', 'KeyW'] },
-  { name: 'backward', keys: ['ArrowDown', 'KeyS'] },
-  { name: 'left', keys: ['ArrowLeft', 'KeyA'] },
-  { name: 'right', keys: ['ArrowRight', 'KeyD'] },
-]
+// マップのサイズ（奇数にすると中心が0,0になります）
+const MAP_SIZE = 5;
+// 中心からのオフセット（5x5なら -2 から +2 の範囲）
+const OFFSET = Math.floor(MAP_SIZE / 2);
 
-// 計算用のベクトル（毎フレーム新しく作ると重くなるため、外で一度だけ定義します）
-const direction = new Vector3()
-const frontVector = new Vector3()
-const sideVector = new Vector3()
+// --- プレイヤーコンポーネント ---
+const Player = ({ position }) => {
+  return (
+    // position[0]がX軸(左右)、position[1]がZ軸(奥・手前)。Y軸(高さ)は0.5で固定
+    <mesh position={[position[0], 0.5, position[1]]}>
+      <boxGeometry args={[0.8, 1, 0.8]} />
+      {/* ボンバーマンっぽく、自己発光(emissive)で少し光らせてサイバーな見た目に */}
+      <meshStandardMaterial color="hotpink" emissive="hotpink" emissiveIntensity={0.5} />
+    </mesh>
+  );
+};
 
-// 2. プレイヤーの移動と衝突判定を制御するコンポーネント
-function Player() {
-  const [, getKeys] = useKeyboardControls()
-  const speed = 5 // 歩くスピード
+// --- マップ（床）コンポーネント ---
+const Map = () => {
+  const tiles = [];
+  
+  // -2 から +2 までループを回して 5x5 = 25マスの床を生成
+  for (let z = -OFFSET; z <= OFFSET; z++) {
+    for (let x = -OFFSET; x <= OFFSET; x++) {
+      // チェス盤のように色を交互に変えて見やすくする
+      const isEven = (Math.abs(x) + Math.abs(z)) % 2 === 0;
+      const tileColor = isEven ? "#333333" : "#444444";
 
-  useFrame((state, delta) => {
-    const { forward, backward, left, right } = getKeys()
-
-    // ① カメラの現在の「絶対的な向き（クォータニオン）」を取得
-    const rotation = state.camera.quaternion
-
-    // ② カメラにとっての「前」方向を計算（空を飛んだり地面に潜ったりしないようY軸成分は0にする）
-    frontVector.set(0, 0, -1).applyQuaternion(rotation)
-    frontVector.y = 0
-    frontVector.normalize()
-
-    // ③ カメラにとっての「右」方向を計算
-    sideVector.set(1, 0, 0).applyQuaternion(rotation)
-    sideVector.y = 0
-    sideVector.normalize()
-
-    // ④ 押されているキーに応じて進む量（1か0か-1）を決定
-    const moveForward = Number(forward) - Number(backward)
-    const moveRight = Number(right) - Number(left)
-
-    // ⑤ 「前」と「右」のベクトルを合成して、実際に進む方向を作る
-    direction.set(0, 0, 0)
-    direction.addScaledVector(frontVector, moveForward)
-    direction.addScaledVector(sideVector, moveRight)
-
-    // 斜め移動時に速くならないように長さを整え、スピードと時間を掛ける
-    if (direction.length() > 0) {
-      direction.normalize().multiplyScalar(speed * delta)
+      tiles.push(
+        <mesh key={`${x}-${z}`} position={[x, 0, z]} rotation={[-Math.PI / 2, 0, 0]}>
+          <planeGeometry args={[0.95, 0.95]} />
+          <meshStandardMaterial color={tileColor} />
+        </mesh>
+      );
     }
+  }
+  return <>{tiles}</>;
+};
 
-    // ⑥ 次に移動する予定の座標を計算
-    const nextX = state.camera.position.x + direction.x
-    const nextZ = state.camera.position.z + direction.z
+// --- メインアプリケーション ---
+export default function App() {
+  // プレイヤーの座標状態 [x, z] （初期値は中心の [0, 0]）
+  const [playerPosition, setPlayerPosition] = useState([0, 0]);
 
-    // ⑦ 壁の突き抜け防止 (±9.5でストップ)
-    state.camera.position.x = Math.max(-9.5, Math.min(9.5, nextX))
-    state.camera.position.z = Math.max(-9.5, Math.min(9.5, nextZ))
-    
-    // ⑧ 視点の高さを1.5に固定
-    state.camera.position.y = 1.5
-  })
+  // キーボード入力の監視
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      setPlayerPosition((prev) => {
+        let [x, z] = prev;
 
-  return null
-}
+        // 十字キーまたはWASDで座標を更新
+        if (e.key === 'ArrowUp' || e.key === 'w') z -= 1;     // 奥へ
+        if (e.key === 'ArrowDown' || e.key === 's') z += 1;   // 手前へ
+        if (e.key === 'ArrowLeft' || e.key === 'a') x -= 1;   // 左へ
+        if (e.key === 'ArrowRight' || e.key === 'd') x += 1;  // 右へ
 
-// 3. 四角い部屋を作るコンポーネント
-function Room() {
+        // マップの外（-2 ～ +2の範囲外）に出ないようにクランプ（制限）する
+        x = Math.max(-OFFSET, Math.min(OFFSET, x));
+        z = Math.max(-OFFSET, Math.min(OFFSET, z));
+
+        return [x, z];
+      });
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    // クリーンアップ関数（コンポーネントのアンマウント時にイベントを削除）
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   return (
-    <group>
-      {/* 床 */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-        <planeGeometry args={[20, 20]} />
-        <meshStandardMaterial color="#555555" />
-      </mesh>
-      
-      {/* 天井 */}
-      <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 5, 0]}>
-        <planeGeometry args={[20, 20]} />
-        <meshStandardMaterial color="#888888" />
-      </mesh>
-
-      {/* 壁 (奥・手前・左・右) */}
-      <mesh position={[0, 2.5, -10]}><boxGeometry args={[20, 5, 1]} /><meshStandardMaterial color="lightcoral" /></mesh>
-      <mesh position={[0, 2.5, 10]}><boxGeometry args={[20, 5, 1]} /><meshStandardMaterial color="lightblue" /></mesh>
-      <mesh position={[-10, 2.5, 0]} rotation={[0, Math.PI / 2, 0]}><boxGeometry args={[20, 5, 1]} /><meshStandardMaterial color="lightgreen" /></mesh>
-      <mesh position={[10, 2.5, 0]} rotation={[0, Math.PI / 2, 0]}><boxGeometry args={[20, 5, 1]} /><meshStandardMaterial color="lightgoldenrodyellow" /></mesh>
-    </group>
-  )
-}
-
-function App() {
-  return (
-    <KeyboardControls map={keyboardMap}>
-      <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
+    <div style={{ width: '100vw', height: '100vh', backgroundColor: '#1a1a1a' }}>
+      {/* カメラを斜め上(y:6, z:6)に配置し、クォータービュー（見下ろし）にする */}
+      <Canvas camera={{ position: [0, 6, 6], fov: 45 }}>
+        <ambientLight intensity={0.5} />
+        <directionalLight position={[10, 10, 5]} intensity={1} />
         
-        {/* 画面上のUI */}
-        <div style={{ position: 'absolute', top: 20, left: 20, zIndex: 10, color: 'white', background: 'rgba(0,0,0,0.6)', padding: '15px', borderRadius: '8px' }}>
-          <b>画面内をクリック</b> してスタート<br />
-          [ W A S D ] - 移動<br />
-          [ ESC ] - マウスロック解除
-        </div>
-
-        <Canvas camera={{ position: [0, 1.5, 0], fov: 75 }}>
-          <ambientLight intensity={0.6} />
-          <directionalLight position={[5, 10, 5]} intensity={1.5} />
-          
-          <Room />
-          <Player />
-          
-          <PointerLockControls />
-        </Canvas>
-      </div>
-    </KeyboardControls>
-  )
+        {/* ステージとプレイヤーの描画 */}
+        <Map />
+        <Player position={playerPosition} />
+        
+        {<OrbitControls />}
+      </Canvas>
+    </div>
+  );
 }
-
-export default App
